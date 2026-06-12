@@ -2,8 +2,11 @@ from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Path, status
+from fastapi import Depends, FastAPI, HTTPException, Path, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -29,6 +32,12 @@ from models import (
 SessionDep = Annotated[Session, Depends(get_db)]
 CurrentUserDep = Annotated[UserORM, Depends(get_current_user)]
 
+TRUCKS_RATE_LIMIT: str = "10/minute"
+AUTH_RATE_LIMIT: str = "5/minute"
+
+limiter = Limiter(key_func=get_remote_address)
+trucks_rate_limit = limiter.shared_limit(TRUCKS_RATE_LIMIT, scope="trucks")
+auth_rate_limit = limiter.shared_limit(AUTH_RATE_LIMIT, scope="auth")
 
 
 @asynccontextmanager
@@ -44,11 +53,18 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
 @app.post("/auth/register", response_model=User, status_code=status.HTTP_201_CREATED)
-def register(user_in: UserCreate, db: SessionDep) -> UserORM:
-    """Register a new user."""
+@auth_rate_limit
+def register(request: Request, user_in: UserCreate, db: SessionDep) -> UserORM:
+    """Register a new user.
+
+    Raises:
+        HTTPException: 429 if the auth rate limit is exceeded.
+    """
     existing_user = db.query(UserORM).filter(UserORM.username == user_in.username).first()
     if existing_user:
         raise HTTPException(
@@ -75,10 +91,17 @@ def register(user_in: UserCreate, db: SessionDep) -> UserORM:
 
 
 @app.post("/auth/login", response_model=Token)
+@auth_rate_limit
 def login(
-    db: SessionDep, form_data: Annotated[OAuth2PasswordRequestForm, Depends()]
+    request: Request,
+    db: SessionDep,
+    form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
 ) -> dict[str, str]:
-    """Login to get an access token."""
+    """Login to get an access token.
+
+    Raises:
+        HTTPException: 429 if the auth rate limit is exceeded.
+    """
     user = db.query(UserORM).filter(UserORM.username == form_data.username).first()
     if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
@@ -143,18 +166,30 @@ def _orm_to_schema(truck: TruckORM) -> Truck:
 
 
 @app.get("/trucks", response_model=list[Truck])
-def list_trucks(db: SessionDep, current_user: CurrentUserDep) -> list[Truck]:
-    """Return a list of all trucks."""
+@trucks_rate_limit
+def list_trucks(request: Request, db: SessionDep, current_user: CurrentUserDep) -> list[Truck]:
+    """Return a list of all trucks.
+
+    Raises:
+        HTTPException: 429 if the trucks rate limit is exceeded.
+    """
     trucks = db.query(TruckORM).order_by(TruckORM.id).all()
     return [_orm_to_schema(truck) for truck in trucks]
 
 
 @app.post("/trucks", response_model=Truck, status_code=status.HTTP_201_CREATED)
-def create_truck(truck_in: TruckCreate, db: SessionDep, current_user: CurrentUserDep) -> Truck:
+@trucks_rate_limit
+def create_truck(
+    request: Request,
+    truck_in: TruckCreate,
+    db: SessionDep,
+    current_user: CurrentUserDep,
+) -> Truck:
     """Create a new truck and return the created record.
 
     Raises:
         HTTPException: 409 if a truck with the same license plate already exists.
+        HTTPException: 429 if the trucks rate limit is exceeded.
     """
     if _get_truck_by_license_plate(db, truck_in.license_plate) is not None:
         raise HTTPException(
@@ -179,18 +214,27 @@ def create_truck(truck_in: TruckCreate, db: SessionDep, current_user: CurrentUse
 
 
 @app.get("/trucks/{truck_id}", response_model=Truck)
-def get_truck(truck_id: int, db: SessionDep, current_user: CurrentUserDep) -> Truck:
+@trucks_rate_limit
+def get_truck(
+    request: Request,
+    truck_id: int,
+    db: SessionDep,
+    current_user: CurrentUserDep,
+) -> Truck:
     """Return a single truck by ID.
 
     Raises:
         HTTPException: 404 if no truck exists with the given ID.
+        HTTPException: 429 if the trucks rate limit is exceeded.
     """
     truck = _get_truck_or_404(db, truck_id)
     return _orm_to_schema(truck)
 
 
 @app.put("/trucks/{truck_id}", response_model=Truck, status_code=status.HTTP_200_OK)
+@trucks_rate_limit
 def update_truck(
+    request: Request,
     truck_in: TruckUpdate,
     db: SessionDep,
     current_user: CurrentUserDep,
@@ -210,6 +254,7 @@ def update_truck(
     Raises:
         HTTPException: 404 if no truck exists with the given ID.
         HTTPException: 409 if another truck already uses the same license plate.
+        HTTPException: 429 if the trucks rate limit is exceeded.
     """
     truck = _get_truck_or_404(db, truck_id)
 
@@ -237,7 +282,9 @@ def update_truck(
 
 
 @app.delete("/trucks/{truck_id}", status_code=status.HTTP_204_NO_CONTENT)
+@trucks_rate_limit
 def delete_truck(
+    request: Request,
     db: SessionDep,
     current_user: CurrentUserDep,
     truck_id: int = Path(gt=0, description="Unique identifier of the truck to delete"),
@@ -251,6 +298,7 @@ def delete_truck(
 
     Raises:
         HTTPException: 404 if no truck exists with the given ID.
+        HTTPException: 429 if the trucks rate limit is exceeded.
     """
     truck = _get_truck_or_404(db, truck_id)
     db.delete(truck)
