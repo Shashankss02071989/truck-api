@@ -1,0 +1,86 @@
+# Truck Details API — Cursor Rules
+
+You are working on a FastAPI Truck Details API. Follow these rules for all Python and API changes in this project.
+
+## Type Hints
+
+- Add type hints to **every** function parameter and return value.
+- Use modern Python 3.10+ syntax: `list[Truck]`, `str | None`, not `List`, `Optional` unless required for compatibility.
+- Type module-level constants when their type is not obvious (e.g. `TRUCKS: list[Truck]`).
+- Use Pydantic models for structured data instead of untyped `dict` values.
+- Prefer `Annotated` with FastAPI `Depends()` for dependency-injected parameters.
+
+```python
+# Good
+def get_truck(truck_id: int) -> Truck:
+    ...
+
+# Bad
+def get_truck(truck_id):
+    ...
+```
+
+## Docstrings
+
+- Add a docstring to **every** function, method, and class.
+- Use Google-style or concise one-line docstrings; be consistent within a file.
+- Route handlers should describe what the endpoint does, not repeat the HTTP method.
+- Document raised exceptions and non-obvious behavior.
+
+```python
+def get_truck(truck_id: int) -> Truck:
+    """Return a single truck by ID.
+
+    Raises:
+        HTTPException: 404 if no truck exists with the given ID.
+    """
+```
+
+## Exception Handling
+
+- Never use bare `except:` or silently swallow errors.
+- Use `HTTPException` with appropriate status codes for API errors (400, 401, 403, 404, 409, 422, 500).
+- Return clear, client-safe `detail` messages; do not leak stack traces or internal paths in responses.
+- Let Pydantic/FastAPI handle request validation (422) where possible; add explicit checks for business-rule failures.
+- Use specific exception types when catching errors (e.g. `InvalidTokenError`, `ValueError`).
+- Log unexpected errors at the server; re-raise or map to a generic 500 only when appropriate.
+
+```python
+# Good
+if truck is None:
+    raise HTTPException(status_code=404, detail=f"Truck with id {truck_id} not found")
+
+# Bad
+try:
+    ...
+except Exception:
+    pass
+```
+
+## REST API Best Practices
+
+- Use nouns for resource paths (`/trucks`, `/trucks/{truck_id}`), not verbs.
+- Use correct HTTP methods: GET (read), POST (create), PUT/PATCH (update), DELETE (remove).
+- Return appropriate status codes: 200 (OK), 201 (Created), 204 (No Content), 404 (Not Found), etc.
+- Use plural resource names consistently (`/trucks`, not `/truck`).
+- Declare `response_model` on all route handlers for consistent JSON output and OpenAPI docs.
+- Use path parameters for resource IDs (`/trucks/{truck_id}`) and query parameters for filtering/pagination.
+- Version the API if breaking changes are introduced (e.g. `/api/v1/trucks`).
+- Keep endpoints stateless; avoid storing per-request state on the app instance.
+- Place Pydantic schemas in `models.py`; keep route handlers thin in `main.py` or dedicated router modules.
+
+## Input Validation
+
+- Validate all input with Pydantic models (`BaseModel`, `Field`, `Literal`, constraints like `ge`/`le`).
+- Never trust raw request data; define explicit request/response schemas for every endpoint.
+- Use `Field()` for bounds, patterns, and descriptions (e.g. `fuel_level` between 0 and 100).
+- Validate path and query parameters with FastAPI types and Pydantic where complex.
+- Reject invalid data early; prefer 422 Unprocessable Entity for schema violations and 400 for business-rule violations.
+- When adding new truck fields or endpoints, update `models.py` first, then wire routes to those models.
+
+## Project Conventions
+
+- Entry point: `main.py` (FastAPI `app` instance and routes).
+- Data models: `models.py` (Pydantic schemas such as `Truck`).
+- Dependencies: `requirements.txt` — add new packages there when introducing features.
+- Match existing code style: minimal scope, no over-engineering, no unrelated refactors.
